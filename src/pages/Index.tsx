@@ -1,42 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Icon from '@/components/ui/icon';
 
 const FLOOR_PLAN =
   'https://cdn.poehali.dev/projects/fef38da0-aab8-4361-b32b-4f75467b4a32/files/9db68242-38ed-429b-b150-6142209fcc89.jpg';
 
+const URL_SUBSCRIBE = 'https://functions.poehali.dev/e8932b82-24f3-4e32-ac53-4d6723bb562a';
+const URL_ALARM = 'https://functions.poehali.dev/95f23561-d097-4f8f-a8b0-bfda497fd88c';
+
 const signals = [
-  {
-    code: 'SIG-01',
-    name: 'Непрерывный сигнал',
-    pattern: 'Длинный гудок без пауз',
-    meaning: 'Полная эвакуация здания. Немедленно покиньте помещение.',
-    level: 'danger',
-    icon: 'Siren',
-  },
-  {
-    code: 'SIG-02',
-    name: 'Прерывистый сигнал',
-    pattern: '2 сек звук / 1 сек пауза',
-    meaning: 'Внимание, угроза. Готовьтесь к эвакуации, ждите указаний.',
-    level: 'signal',
-    icon: 'AlertTriangle',
-  },
-  {
-    code: 'SIG-03',
-    name: 'Короткие импульсы',
-    pattern: '5 коротких сигналов',
-    meaning: 'Локальная тревога. Эвакуация одного сектора или этажа.',
-    level: 'signal',
-    icon: 'BellRing',
-  },
-  {
-    code: 'SIG-04',
-    name: 'Отбой',
-    pattern: 'Голосовое сообщение «Отбой»',
-    meaning: 'Угроза устранена. Возвращение в помещения разрешено.',
-    level: 'safe',
-    icon: 'CircleCheck',
-  },
+  { code: 'SIG-01', name: 'Непрерывный сигнал', pattern: 'Длинный гудок без пауз', meaning: 'Полная эвакуация здания. Немедленно покиньте помещение.', level: 'danger', icon: 'Siren' },
+  { code: 'SIG-02', name: 'Прерывистый сигнал', pattern: '2 сек звук / 1 сек пауза', meaning: 'Внимание, угроза. Готовьтесь к эвакуации, ждите указаний.', level: 'signal', icon: 'AlertTriangle' },
+  { code: 'SIG-03', name: 'Короткие импульсы', pattern: '5 коротких сигналов', meaning: 'Локальная тревога. Эвакуация одного сектора или этажа.', level: 'signal', icon: 'BellRing' },
+  { code: 'SIG-04', name: 'Отбой', pattern: 'Голосовое сообщение «Отбой»', meaning: 'Угроза устранена. Возвращение в помещения разрешено.', level: 'safe', icon: 'CircleCheck' },
 ];
 
 const steps = [
@@ -62,14 +37,28 @@ const exits = [
 ];
 
 const levelColor: Record<string, string> = {
-  danger: 'text-danger border-danger/40',
-  signal: 'text-signal border-signal/40',
-  safe: 'text-safe border-safe/40',
+  danger: 'text-danger',
+  signal: 'text-signal',
+  safe: 'text-safe',
 };
+
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = window.atob(base64);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+
+type PushStatus = 'idle' | 'loading' | 'subscribed' | 'unsupported' | 'denied';
+type AlarmStatus = 'idle' | 'sending' | 'sent' | 'error';
 
 const Index = () => {
   const [time, setTime] = useState(new Date());
   const [alarm, setAlarm] = useState(false);
+  const [pushStatus, setPushStatus] = useState<PushStatus>('idle');
+  const [alarmStatus, setAlarmStatus] = useState<AlarmStatus>('idle');
+  const [alarmMsg, setAlarmMsg] = useState('');
+  const [sentCount, setSentCount] = useState<number | null>(null);
 
   useEffect(() => {
     const i = setInterval(() => setTime(new Date()), 1000);
@@ -82,13 +71,87 @@ const Index = () => {
     return () => clearTimeout(t);
   }, [alarm]);
 
+  // Проверяем текущий статус подписки при загрузке
+  useEffect(() => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      setPushStatus('unsupported');
+      return;
+    }
+    navigator.serviceWorker.register('/sw.js').then((reg) => {
+      reg.pushManager.getSubscription().then((sub) => {
+        if (sub) setPushStatus('subscribed');
+      });
+    });
+    if (Notification.permission === 'denied') setPushStatus('denied');
+  }, []);
+
+  const subscribe = useCallback(async () => {
+    setPushStatus('loading');
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const res = await fetch(URL_SUBSCRIBE);
+      const { vapid_public_key } = await res.json();
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapid_public_key),
+      });
+      const subJson = sub.toJSON();
+      await fetch(URL_SUBSCRIBE, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          endpoint: subJson.endpoint,
+          p256dh: subJson.keys?.p256dh,
+          auth: subJson.keys?.auth,
+        }),
+      });
+      setPushStatus('subscribed');
+    } catch (e) {
+      console.error(e);
+      setPushStatus(Notification.permission === 'denied' ? 'denied' : 'idle');
+    }
+  }, []);
+
+  const unsubscribe = useCallback(async () => {
+    setPushStatus('loading');
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      await fetch(URL_SUBSCRIBE, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint: sub.endpoint }),
+      });
+      await sub.unsubscribe();
+    }
+    setPushStatus('idle');
+  }, []);
+
+  const sendAlarm = useCallback(async () => {
+    setAlarmStatus('sending');
+    setAlarm(true);
+    try {
+      const res = await fetch(URL_ALARM, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ signal_code: 'SIG-01', message: 'ТРЕВОГА · ЭВАКУАЦИЯ. Немедленно покиньте здание через ближайший выход.' }),
+      });
+      const data = await res.json();
+      setSentCount(data.sent ?? 0);
+      setAlarmStatus('sent');
+    } catch {
+      setAlarmStatus('error');
+    }
+    setTimeout(() => setAlarmStatus('idle'), 6000);
+  }, []);
+
   const clock = time.toLocaleTimeString('ru-RU');
 
   return (
     <div className={`min-h-screen relative ${alarm ? 'animate-alarm-flash' : ''}`}>
       <div className="absolute inset-0 grid-texture opacity-[0.35] pointer-events-none" />
 
-      {/* push-уведомление */}
+      {/* Уведомление в приложении */}
       {alarm && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-md animate-slide-down">
           <div className="bg-danger text-white rounded-lg shadow-2xl border border-white/20 p-4 flex gap-3 items-start">
@@ -96,13 +159,16 @@ const Index = () => {
               <Icon name="Siren" size={26} />
             </div>
             <div className="flex-1">
-              <div className="flex items-center gap-2 text-[11px] uppercase tracking-widest opacity-80 font-mono">
-                <span>Push · Система оповещения</span>
-              </div>
+              <div className="text-[11px] uppercase tracking-widest opacity-80 font-mono">Push · Система оповещения</div>
               <p className="font-display text-lg font-600 leading-tight mt-0.5">ТРЕВОГА · ЭВАКУАЦИЯ</p>
               <p className="text-sm text-white/90 mt-1">
                 Сработал сигнал SIG-01. Немедленно покиньте здание через ближайший выход.
               </p>
+              {alarmStatus === 'sent' && sentCount !== null && (
+                <p className="text-xs text-white/70 mt-1 font-mono">
+                  Отправлено на {sentCount} устройств
+                </p>
+              )}
             </div>
             <button onClick={() => setAlarm(false)} className="opacity-70 hover:opacity-100">
               <Icon name="X" size={18} />
@@ -138,10 +204,7 @@ const Index = () => {
         </header>
 
         {/* STATUS BAR */}
-        <section
-          className="mt-6 rounded-lg border border-border bg-card overflow-hidden animate-fade-in"
-          style={{ animationDelay: '80ms' }}
-        >
+        <section className="mt-6 rounded-lg border border-border bg-card overflow-hidden animate-fade-in" style={{ animationDelay: '80ms' }}>
           <div className="hazard-stripes h-1.5 w-full opacity-60" />
           <div className="grid grid-cols-2 md:grid-cols-4 divide-y md:divide-y-0 md:divide-x divide-border">
             {[
@@ -161,24 +224,81 @@ const Index = () => {
           </div>
         </section>
 
-        {/* ALARM TRIGGER */}
-        <section
-          className="mt-6 rounded-lg border border-signal/40 bg-card p-5 flex flex-col sm:flex-row items-center gap-4 animate-fade-in"
-          style={{ animationDelay: '160ms' }}
-        >
-          <div className="flex-1 text-center sm:text-left">
-            <p className="font-display text-lg font-600 uppercase tracking-wide">Тестовое оповещение</p>
-            <p className="text-sm text-muted-foreground">
-              Запустите симуляцию push-уведомления, чтобы проверить готовность персонала.
-            </p>
+        {/* PUSH SUBSCRIPTION + ALARM */}
+        <section className="mt-6 grid sm:grid-cols-2 gap-4 animate-fade-in" style={{ animationDelay: '160ms' }}>
+
+          {/* Подписка */}
+          <div className="rounded-lg border border-border bg-card p-5 flex flex-col gap-3">
+            <div className="flex items-center gap-2">
+              <Icon name="Bell" size={18} className="text-signal" />
+              <span className="font-display font-600 uppercase tracking-wide">Push-уведомления</span>
+            </div>
+            {pushStatus === 'unsupported' && (
+              <p className="text-sm text-muted-foreground">Ваш браузер не поддерживает push-уведомления.</p>
+            )}
+            {pushStatus === 'denied' && (
+              <p className="text-sm text-danger">Уведомления заблокированы. Разрешите их в настройках браузера.</p>
+            )}
+            {pushStatus === 'subscribed' && (
+              <>
+                <p className="text-sm text-safe flex items-center gap-1.5">
+                  <Icon name="CircleCheck" size={15} /> Это устройство подписано на оповещения
+                </p>
+                <button onClick={unsubscribe} className="text-xs text-muted-foreground hover:text-foreground underline self-start transition">
+                  Отписаться
+                </button>
+              </>
+            )}
+            {(pushStatus === 'idle' || pushStatus === 'loading') && (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  Подпишитесь, чтобы получать тревогу прямо на это устройство — даже когда браузер закрыт.
+                </p>
+                <button
+                  onClick={subscribe}
+                  disabled={pushStatus === 'loading'}
+                  className="bg-card border border-signal/60 text-signal font-display font-600 uppercase tracking-wider text-sm px-4 py-2.5 rounded-md hover:bg-signal hover:text-signal-foreground transition flex items-center gap-2 self-start disabled:opacity-50"
+                >
+                  {pushStatus === 'loading'
+                    ? <><Icon name="Loader" size={16} className="animate-spin" /> Подключение…</>
+                    : <><Icon name="BellPlus" size={16} /> Подписаться на тревогу</>
+                  }
+                </button>
+              </>
+            )}
           </div>
-          <button
-            onClick={() => setAlarm(true)}
-            className="animate-pulse-ring bg-signal text-signal-foreground font-display font-600 uppercase tracking-wider px-6 py-3 rounded-md hover:brightness-110 transition flex items-center gap-2"
-          >
-            <Icon name="Siren" size={18} />
-            Запустить сигнал
-          </button>
+
+          {/* Запуск тревоги */}
+          <div className="rounded-lg border border-signal/40 bg-card p-5 flex flex-col gap-3">
+            <div className="flex items-center gap-2">
+              <Icon name="Siren" size={18} className="text-danger" />
+              <span className="font-display font-600 uppercase tracking-wide">Запуск оповещения</span>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Отправляет реальный push на все подписанные устройства и отображает тревогу на экране.
+            </p>
+            {alarmStatus === 'sent' && (
+              <p className="text-sm text-safe flex items-center gap-1.5">
+                <Icon name="CircleCheck" size={15} />
+                Тревога отправлена · {sentCount} устройств оповещено
+              </p>
+            )}
+            {alarmStatus === 'error' && (
+              <p className="text-sm text-danger flex items-center gap-1.5">
+                <Icon name="CircleX" size={15} /> Ошибка отправки. Попробуйте ещё раз.
+              </p>
+            )}
+            <button
+              onClick={sendAlarm}
+              disabled={alarmStatus === 'sending'}
+              className="animate-pulse-ring bg-danger text-white font-display font-600 uppercase tracking-wider px-5 py-2.5 rounded-md hover:brightness-110 transition flex items-center gap-2 self-start disabled:opacity-60"
+            >
+              {alarmStatus === 'sending'
+                ? <><Icon name="Loader" size={16} className="animate-spin" /> Отправка…</>
+                : <><Icon name="Siren" size={16} /> SIG-01 · Полная эвакуация</>
+              }
+            </button>
+          </div>
         </section>
 
         {/* SIGNALS */}
@@ -188,12 +308,9 @@ const Index = () => {
           </h2>
           <div className="mt-4 grid sm:grid-cols-2 gap-4">
             {signals.map((s) => (
-              <div
-                key={s.code}
-                className={`rounded-lg border bg-card p-5 ${levelColor[s.level]} border-border hover:border-signal/40 transition`}
-              >
+              <div key={s.code} className="rounded-lg border border-border bg-card p-5 hover:border-signal/40 transition">
                 <div className="flex items-start justify-between">
-                  <Icon name={s.icon} size={26} className={levelColor[s.level].split(' ')[0]} />
+                  <Icon name={s.icon} size={26} className={levelColor[s.level]} />
                   <span className="font-mono text-xs text-muted-foreground">{s.code}</span>
                 </div>
                 <h3 className="font-display text-lg font-600 mt-3 text-foreground">{s.name}</h3>
@@ -233,8 +350,8 @@ const Index = () => {
             <div className="mt-4 rounded-lg border border-border overflow-hidden bg-card relative">
               <img src={FLOOR_PLAN} alt="План эвакуации" className="w-full object-cover aspect-video" />
               <div className="absolute bottom-3 left-3 bg-background/80 backdrop-blur border border-border rounded px-3 py-1.5 text-xs font-mono flex gap-3">
-                <span className="flex items-center gap-1.5"><span className="h-2 w-2 bg-signal" /> Маршрут</span>
-                <span className="flex items-center gap-1.5"><span className="h-2 w-2 bg-safe" /> Выход</span>
+                <span className="flex items-center gap-1.5"><span className="h-2 w-2 bg-signal inline-block" /> Маршрут</span>
+                <span className="flex items-center gap-1.5"><span className="h-2 w-2 bg-safe inline-block" /> Выход</span>
               </div>
             </div>
           </div>
@@ -245,11 +362,7 @@ const Index = () => {
             <div className="mt-4 space-y-3">
               {exits.map((e) => (
                 <div key={e.id} className="rounded-lg border border-border bg-card p-3 flex items-center gap-3">
-                  <div
-                    className={`h-9 w-9 rounded-md flex items-center justify-center font-display font-700 ${
-                      e.status === 'open' ? 'bg-safe/15 text-safe' : 'bg-danger/15 text-danger'
-                    }`}
-                  >
+                  <div className={`h-9 w-9 rounded-md flex items-center justify-center font-display font-700 ${e.status === 'open' ? 'bg-safe/15 text-safe' : 'bg-danger/15 text-danger'}`}>
                     {e.id}
                   </div>
                   <div className="flex-1">
@@ -296,7 +409,7 @@ const Index = () => {
         </section>
 
         <footer className="mt-12 pt-6 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-muted-foreground font-mono">
-          <span>EVAC·SYSTEM · v1.0</span>
+          <span>EVAC·SYSTEM · v1.1</span>
           <span>Соответствует требованиям пожарной безопасности · ФЗ-123</span>
         </footer>
       </div>

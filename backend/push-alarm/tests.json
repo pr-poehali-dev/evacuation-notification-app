@@ -1,0 +1,13 @@
+{
+  "tests": [
+    {
+      "name": "Отправка тревоги (нет подписчиков — ok)",
+      "method": "POST",
+      "path": "/",
+      "body": {"signal_code": "SIG-01", "message": "Тест"},
+      "expectedStatus": 200,
+      "expectedBody": {"ok": true},
+      "bodyMatcher": "partial"
+    }
+  ]
+}
