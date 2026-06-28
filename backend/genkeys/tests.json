@@ -1,0 +1,12 @@
+{
+  "tests": [
+    {
+      "name": "Генерация ключей",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200,
+      "expectedBody": {"public_key": "string", "private_key": "string"},
+      "bodyMatcher": "partial"
+    }
+  ]
+}
