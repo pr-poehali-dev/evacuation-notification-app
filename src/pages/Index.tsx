@@ -409,8 +409,13 @@ const Index = () => {
         </section>
 
         <footer className="mt-12 pt-6 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-muted-foreground font-mono">
-          <span>EVAC·SYSTEM · v1.1</span>
-          <span>Соответствует требованиям пожарной безопасности · ФЗ-123</span>
+          <span>EVAC·SYSTEM · v1.2</span>
+          <div className="flex items-center gap-4">
+            <span>Соответствует требованиям пожарной безопасности · ФЗ-123</span>
+            <a href="/admin/login" className="flex items-center gap-1 hover:text-signal transition">
+              <Icon name="ShieldCheck" size={12} /> Администратор
+            </a>
+          </div>
         </footer>
       </div>
     </div>

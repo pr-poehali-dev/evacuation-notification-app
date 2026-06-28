@@ -1,0 +1,22 @@
+{
+  "tests": [
+    {
+      "name": "Неверный пин",
+      "method": "POST",
+      "path": "/",
+      "body": {"pin": "0000"},
+      "expectedStatus": 401,
+      "expectedBody": {"ok": false},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Проверка токена (невалидный)",
+      "method": "GET",
+      "path": "/",
+      "headers": {"X-Admin-Token": "invalid"},
+      "expectedStatus": 200,
+      "expectedBody": {"valid": false},
+      "bodyMatcher": "partial"
+    }
+  ]
+}

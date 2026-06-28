@@ -1,13 +1,12 @@
 {
   "tests": [
     {
-      "name": "Отправка тревоги (нет подписчиков — ok)",
+      "name": "Без токена — 403",
       "method": "POST",
       "path": "/",
       "body": {"signal_code": "SIG-01", "message": "Тест"},
-      "expectedStatus": 200,
-      "expectedBody": {"ok": true},
-      "bodyMatcher": "partial"
+      "expectedStatus": 403,
+      "bodyMatcher": "none"
     }
   ]
 }

@@ -102,11 +102,21 @@ def handler(event: dict, context) -> dict:
     cors = {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Token',
     }
 
     if event.get('httpMethod') == 'OPTIONS':
         return {'statusCode': 200, 'headers': {**cors, 'Access-Control-Max-Age': '86400'}, 'body': ''}
+
+    # Проверка токена администратора
+    import secrets as _secrets
+    stored_pin = os.environ.get('ADMIN_PIN', '')
+    pin_hash = hashlib.sha256(stored_pin.encode()).hexdigest()
+    ts = str(int(time.time() // (8 * 3600)))
+    expected_token = hmac.new(pin_hash.encode(), ts.encode(), hashlib.sha256).hexdigest()
+    incoming_token = (event.get('headers') or {}).get('x-admin-token', '')
+    if not _secrets.compare_digest(incoming_token, expected_token):
+        return {'statusCode': 403, 'headers': cors, 'body': json.dumps({'error': 'Доступ запрещён'})}
 
     body = json.loads(event.get('body') or '{}')
     signal_code = body.get('signal_code', 'SIG-01')
